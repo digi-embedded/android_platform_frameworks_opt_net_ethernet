@@ -35,6 +35,7 @@ import android.os.INetworkManagementService;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.SystemProperties;
 import android.provider.Settings;
 import android.util.Log;
 import android.util.PrintWriterPrinter;
@@ -131,6 +132,13 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
         String[] ifList = listInterfaces();
         if (ifList != null && ifList.length > 0)
                 iface = ifList[0];
+
+        // If the Ethernet property does not exist, create it. Ethernet is always enabled on first boot.
+        String prop = SystemProperties.get(String.format(EthernetProperties.ETH_PROPERTY, iface));
+        if (prop == null || prop.isEmpty())
+                SystemProperties.set(String.format(EthernetProperties.ETH_PROPERTY, iface), 
+                        EthernetProperties.ETH_PROPERTY_ENABLED);
+
         mStarted.set(true);
     }
 
@@ -333,6 +341,9 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
             Log.e(TAG, "Could not change the state of the interface " + e);
         } finally {
             Binder.restoreCallingIdentity(token);
+            // Update the Ethernet enabled system property.
+            SystemProperties.set(String.format(EthernetProperties.ETH_PROPERTY, iface),
+                    enable ? EthernetProperties.ETH_PROPERTY_ENABLED : EthernetProperties.ETH_PROPERTY_DISABLED);
         }
     }
 
