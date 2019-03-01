@@ -20,6 +20,7 @@ import static android.net.TestNetworkManager.TEST_TAP_PREFIX;
 
 import android.annotation.Nullable;
 import android.content.Context;
+import android.net.EthernetProperties;
 import android.net.IEthernetServiceListener;
 import android.net.ITetheredInterfaceCallback;
 import android.net.InterfaceConfiguration;
@@ -35,6 +36,7 @@ import android.os.INetworkManagementService;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.SystemProperties;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
@@ -326,6 +328,12 @@ final class EthernetTracker {
         if (config.hasFlag("running")) {
             updateInterfaceState(iface, true);
         }
+
+        // If the Ethernet property does not exist, create it. Ethernet is always enabled on first boot.
+        String prop = SystemProperties.get(String.format(EthernetProperties.ETH_PROPERTY, iface));
+        if (prop == null || prop.isEmpty())
+                SystemProperties.set(String.format(EthernetProperties.ETH_PROPERTY, iface),
+                        EthernetProperties.ETH_PROPERTY_ENABLED);
     }
 
     void updateInterfaceState(String iface, boolean up) {
