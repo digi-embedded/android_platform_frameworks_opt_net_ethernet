@@ -310,6 +310,8 @@ final class EthernetTracker {
             IpConfiguration ipConfiguration = mIpConfigurations.get(iface);
             if (ipConfiguration == null) {
                 ipConfiguration = createDefaultIpConfiguration();
+                mConfigStore.write(iface, ipConfiguration);
+                mIpConfigurations.put(iface, ipConfiguration);
             }
 
             Log.d(TAG, "Tracking interface in client mode: " + iface);
