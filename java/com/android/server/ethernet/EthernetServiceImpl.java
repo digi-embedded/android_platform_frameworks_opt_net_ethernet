@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2014 The Android Open Source Project
+ * Copyright (C) 2018-2019 Digi International Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,23 +19,34 @@ package com.android.server.ethernet;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
 import android.net.IEthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.ITetheredInterfaceCallback;
 import android.net.IpConfiguration;
+import android.net.Network;
+import android.net.NetworkInfo;
 import android.net.NetworkStack;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.INetworkManagementService;
 import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.provider.Settings;
 import android.util.Log;
 import android.util.PrintWriterPrinter;
 
 import com.android.internal.util.IndentingPrintWriter;
 
+import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileDescriptor;
+import java.io.FileReader;
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -42,16 +54,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * the IEthernetManager interface.
  */
 public class EthernetServiceImpl extends IEthernetManager.Stub {
+
+    // Constants.
     private static final String TAG = "EthernetServiceImpl";
 
+    private static final String HW_ADDRESS_PATH = "/sys/class/net";
+    private static final String HW_ADDRESS_FILE = "address";
+
+    // Variables.
     private final Context mContext;
     private final AtomicBoolean mStarted = new AtomicBoolean(false);
 
     private Handler mHandler;
     private EthernetTracker mTracker;
 
+    private final INetworkManagementService nmService;
+
+    private ConnectivityManager connManager;
+
     public EthernetServiceImpl(Context context) {
         mContext = context;
+
+        nmService = INetworkManagementService.Stub.asInterface(ServiceManager.getService(Context.NETWORKMANAGEMENT_SERVICE));
+        connManager = (ConnectivityManager)mContext.getSystemService(Context.CONNECTIVITY_SERVICE);
     }
 
     private void enforceAccessPermission() {
@@ -60,16 +85,10 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
                 "EthernetService");
     }
 
-    private void enforceUseRestrictedNetworksPermission() {
+    private void enforceChangePermission() {
         mContext.enforceCallingOrSelfPermission(
-                android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS,
+                android.Manifest.permission.CHANGE_NETWORK_STATE,
                 "ConnectivityService");
-    }
-
-    private boolean checkUseRestrictedNetworksPermission() {
-        return mContext.checkCallingOrSelfPermission(
-                android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS)
-                == PackageManager.PERMISSION_GRANTED;
     }
 
     public void start() {
@@ -87,7 +106,151 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
 
     @Override
     public String[] getAvailableInterfaces() throws RemoteException {
-        return mTracker.getInterfaces(checkUseRestrictedNetworksPermission());
+        return mTracker.getInterfaces(true);
+    }
+
+    /**
+     * Returns whether the given Ethernet interface is connected or not.
+     *
+     * @param iface Ethernet interface.
+     *
+     * @return {@code true} if connected, {@code false} otherwise.
+     */
+    @Override
+    public boolean isConnected(String iface) {
+        if (iface == null)
+            return false;
+
+        enforceAccessPermission();
+        Log.d(TAG, "Get connectivity of interface " + iface);
+        String macAddr = getMacAddress(iface);
+        if (connManager == null)
+            connManager = (ConnectivityManager)mContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+        for (Network network:connManager.getAllNetworks()) {
+            NetworkInfo networkInfo = connManager.getNetworkInfo(network);
+            if (networkInfo.getType() != ConnectivityManager.TYPE_ETHERNET)
+                continue;
+            if (!networkInfo.getExtraInfo().equalsIgnoreCase(macAddr))
+                continue;
+            return networkInfo.isConnected();
+        }
+        return false;
+    }
+
+    /**
+     * Returns whether the given interface is enabled or not.
+     *
+     * @param iface Ethernet interface.
+     *
+     * @return {@code true} if the interface is enabled, {@code false}
+     *         otherwise.
+     */
+    @Override
+    public boolean isEnabled(String iface) {
+        if (iface == null)
+            return false;
+
+        enforceAccessPermission();
+        try {
+            Log.d(TAG, "Get state of interface " + iface);
+            NetworkInterface nIface = NetworkInterface.getByName(iface);
+            if (nIface != null)
+                return nIface.isUp();
+        } catch (SocketException e) {
+            Log.e(TAG, "Could not retrieve interface status: " + e);
+        }
+        return false;
+    }
+
+    /**
+     * Enables or disables the given interface.
+     *
+     * @param iface Ethernet interface.
+     * @param enable {@code true} to enable it, {@code false} to disable it.
+     */
+    @Override
+    public void setEnabled(String iface, boolean enable) {
+        if (iface == null)
+            return;
+
+        enforceChangePermission();
+        long token = Binder.clearCallingIdentity();
+        try {
+            synchronized (this) {
+                if (enable) {
+                    Log.d(TAG, "Enable interface " + iface);
+                    nmService.setInterfaceUp(iface);
+                } else {
+                    Log.d(TAG, "Disable interface " + iface);
+                    mTracker.updateInterfaceState(iface, false);
+                    nmService.clearInterfaceAddresses(iface);
+                    nmService.setInterfaceDown(iface);
+                }
+            }
+        } catch (RemoteException e) {
+            Log.e(TAG, "Could not change the state of the interface " + e);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    /**
+     * Resets the given Ethernet interface.
+     *
+     * @param iface Ethernet interface.
+     */
+    @Override
+    public void resetInterface(String iface) {
+        if (iface == null)
+            return;
+
+        enforceChangePermission();
+        long token = Binder.clearCallingIdentity();
+        try {
+            synchronized (this) {
+                Log.d(TAG, "Reset interface " + iface);
+                nmService.setInterfaceDown(iface);
+                nmService.setInterfaceUp(iface);
+            }
+        } catch (RemoteException e) {
+            Log.e(TAG, "Could not reset the interface " + e);
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    /**
+     * Reads the MAC address of the given Ethernet interface.
+     *
+     * @param iface Ethernet interface.
+     *
+     * @return The MAC address or {@code null} if could not be read.
+     */
+    @Override
+    public String getMacAddress(String iface) {
+        if (iface == null)
+            return null;
+
+        enforceAccessPermission();
+        BufferedReader reader = null;
+        try {
+            Log.d(TAG, "Read MAC address of interface " + iface);
+            reader = new BufferedReader(new FileReader(new File(HW_ADDRESS_PATH +
+                    File.separator + iface, HW_ADDRESS_FILE)));
+            String value = reader.readLine();
+            if (value != null)
+                return value.trim();
+        } catch (IOException e) {
+            Log.e(TAG, "Could not read MAC address of interface '" + iface + "': " + e);
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (IOException e) {}
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -98,9 +261,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     public IpConfiguration getConfiguration(String iface) {
         enforceAccessPermission();
 
-        if (mTracker.isRestrictedInterface(iface)) {
-            enforceUseRestrictedNetworksPermission();
-        }
+        Log.d(TAG, "Get configuration of interface " + iface);
 
         return new IpConfiguration(mTracker.getIpConfiguration(iface));
     }
@@ -114,11 +275,9 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
             Log.w(TAG, "System isn't ready enough to change ethernet configuration");
         }
 
-        NetworkStack.checkNetworkStackPermission(mContext);
+        enforceChangePermission();
 
-        if (mTracker.isRestrictedInterface(iface)) {
-            enforceUseRestrictedNetworksPermission();
-        }
+        Log.d(TAG, "Set configuration of interface " + iface + ": " + config);
 
         // TODO: this does not check proxy settings, gateways, etc.
         // Fix this by making IpConfiguration a complete representation of static configuration.
@@ -132,9 +291,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     public boolean isAvailable(String iface) {
         enforceAccessPermission();
 
-        if (mTracker.isRestrictedInterface(iface)) {
-            enforceUseRestrictedNetworksPermission();
-        }
+        Log.d(TAG, "Check availability of interface " + iface);
 
         return mTracker.isTrackingInterface(iface);
     }
@@ -148,7 +305,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
             throw new IllegalArgumentException("listener must not be null");
         }
         enforceAccessPermission();
-        mTracker.addListener(listener, checkUseRestrictedNetworksPermission());
+        mTracker.addListener(listener, true);
     }
 
     /**

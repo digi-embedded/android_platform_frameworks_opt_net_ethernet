@@ -328,7 +328,7 @@ final class EthernetTracker {
         }
     }
 
-    private void updateInterfaceState(String iface, boolean up) {
+    void updateInterfaceState(String iface, boolean up) {
         final int mode = getInterfaceMode(iface);
         final boolean factoryLinkStateUpdated = (mode == INTERFACE_MODE_CLIENT)
                 && mFactory.updateInterfaceLinkState(iface, up);
