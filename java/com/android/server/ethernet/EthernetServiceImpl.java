@@ -20,6 +20,7 @@ package com.android.server.ethernet;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
+import android.net.EthernetProperties;
 import android.net.IEthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.IpConfiguration;
@@ -31,6 +32,7 @@ import android.os.HandlerThread;
 import android.os.INetworkManagementService;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.SystemProperties;
 import android.util.Log;
 import android.util.PrintWriterPrinter;
 
@@ -188,6 +190,9 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
             Log.e(TAG, "Could not change the state of the interface " + e);
         } finally {
             Binder.restoreCallingIdentity(token);
+            // Update the Ethernet enabled system property.
+            SystemProperties.set(String.format(EthernetProperties.ETH_PROPERTY, iface),
+                    enable ? EthernetProperties.ETH_PROPERTY_ENABLED : EthernetProperties.ETH_PROPERTY_DISABLED);
         }
     }
 
