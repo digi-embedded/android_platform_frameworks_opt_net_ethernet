@@ -216,7 +216,7 @@ final class EthernetTracker {
         }
     }
 
-    private void updateInterfaceState(String iface, boolean up) {
+    void updateInterfaceState(String iface, boolean up) {
         boolean modified = mFactory.updateInterfaceLinkState(iface, up);
         if (modified) {
             boolean restricted = isRestrictedInterface(iface);
