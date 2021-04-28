@@ -237,9 +237,32 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
             return null;
 
         enforceAccessPermission();
+
+        Log.d(TAG, "Read MAC address of interface " + iface);
+
+        byte[] macArray = null;
+        try {
+            NetworkInterface nIface = NetworkInterface.getByName(iface);
+            if (nIface != null)
+                macArray = nIface.getHardwareAddress();
+        } catch (SocketException e) {
+            Log.d(TAG, "Could not get network interface, try reading file: " + e);
+        }
+
+        if (macArray != null) {
+            StringBuilder macBuilder = new StringBuilder("");
+            for (int i = 0; i < macArray.length; i++) {
+                int v = macArray[i] & 0xFF;
+                String hv = Integer.toHexString(v).toUpperCase();
+                if (hv.length() < 2)
+                    macBuilder.append(0);
+                macBuilder.append(hv).append(":");
+            }
+            return macBuilder.substring(0, macBuilder.length() - 1);
+        }
+
         BufferedReader reader = null;
         try {
-            Log.d(TAG, "Read MAC address of interface " + iface);
             reader = new BufferedReader(new FileReader(new File(HW_ADDRESS_PATH +
                     File.separator + iface, HW_ADDRESS_FILE)));
             String value = reader.readLine();
